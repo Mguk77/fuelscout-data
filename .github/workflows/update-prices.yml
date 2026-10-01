@@ -1,0 +1,54 @@
+name: Update fuel prices
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub may start scheduled runs a few minutes late.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Re-download every forecourt and price"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two updates at once; each builds on the last one's snapshot.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Download prices and build area files
+        run: node scripts/update.mjs
+        env:
+          FUEL_FINDER_CLIENT_ID: ${{ secrets.FUEL_FINDER_CLIENT_ID }}
+          FUEL_FINDER_CLIENT_SECRET: ${{ secrets.FUEL_FINDER_CLIENT_SECRET }}
+          SITE_URL: ${{ steps.pages.outputs.base_url }}
+          FORCE_FULL: ${{ inputs.full }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
