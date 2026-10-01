@@ -3,54 +3,92 @@
 Publishes UK fuel prices from the GOV.UK [Fuel Finder](https://www.gov.uk/guidance/access-the-latest-fuel-prices-and-forecourt-data-via-api-or-email)
 API as small area files on GitHub Pages, for the FuelScout iPhone/CarPlay app.
 
-Every 15 minutes a GitHub Action downloads what's changed, splits the UK into
-~20 km tiles and publishes them. The app downloads only the 1–4 tiles around you.
-Free, with no server to run.
+Every 15 minutes a Google Cloud Run job in London downloads what's changed, splits the UK into
+~20 km tiles and pushes them to the `gh-pages` branch, which GitHub Pages serves.
+The app downloads only the 1–4 tiles around you. Expected to stay within Google's free allowance.
 
 ```
 https://<you>.github.io/fuelscout-data/meta.json            last update, tile size
 https://<you>.github.io/fuelscout-data/tiles/257_-9.json    forecourts + prices in one tile
 ```
 
-## Setup (about 10 minutes)
+**Why Google Cloud and not GitHub Actions?** The Fuel Finder API only answers requests from UK addresses.
+Anything else (GitHub's runners, AWS Stockholm, servers in the Netherlands, Germany or the US) gets an empty
+`403` from CloudFront. Google Cloud's London region (`europe-west2`) gets through.
 
-1. **Create the repo.** On github.com: **New repository** → name `fuelscout-data` → **Public** → don't add a README → **Create**.
-   (Public is required for free GitHub Pages and unlimited Actions minutes. Your API secret stays private in step 2;
-   the fuel data itself is public under the Open Government Licence.)
+## How it fits together
 
-2. **Add your Fuel Finder credentials** (from the [developer portal](https://www.developer.fuel-finder.service.gov.uk/access-latest-fuelprices)):
-   repo **Settings → Secrets and variables → Actions → New repository secret**, twice:
-   - `FUEL_FINDER_CLIENT_ID`
-   - `FUEL_FINDER_CLIENT_SECRET`
+| Part | Where | What it does |
+|---|---|---|
+| `scripts/update.mjs` | Cloud Run job `fuelscout-updater` | Downloads changes from Fuel Finder and writes `./public` |
+| `scripts/publish.sh` | same job | Force-pushes `./public` as the single commit on `gh-pages` |
+| Cloud Scheduler `fuelscout-every-15-min` | `europe-west2` | Starts the job every 15 minutes |
+| Secret Manager | `europe-west2` | `FUEL_FINDER_CLIENT_ID`, `FUEL_FINDER_CLIENT_SECRET`, `GITHUB_TOKEN` |
+| GitHub Pages | this repo, `gh-pages` branch | Serves the files to the app |
 
-3. **Turn on Pages.** Repo **Settings → Pages → Build and deployment → Source: GitHub Actions**.
+The job runs as the service account `fuelscout-updater@<project>.iam.gserviceaccount.com`, which can only
+read those three secrets and start the job.
 
-4. **Upload this folder.** In Terminal:
+## Setup
+
+1. **GitHub repo.** Create a public repo `fuelscout-data` and push this folder to `main`.
+
+2. **GitHub token.** **Settings → Developer settings → Fine-grained tokens**: only the `fuelscout-data` repo,
+   permission **Contents: Read and write**, nothing else. Set a reminder to renew it before it expires.
+
+3. **Google Cloud project.** Create a project at [console.cloud.google.com](https://console.cloud.google.com),
+   link billing (a card is required), and add a small budget alert under **Billing → Budgets & alerts**.
+   Install the [gcloud CLI](https://cloud.google.com/sdk/docs/install), then:
    ```bash
-   cd ~/"Watch Apps/FuelScout/fuelscout-data"
-   git init -b main
-   git add .
-   git commit -m "Fuel price publisher"
-   git remote add origin https://github.com/<you>/fuelscout-data.git
-   git push -u origin main
+   gcloud auth login
+   gcloud config set project <project-id>
+   gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com
+   gcloud iam service-accounts create fuelscout-updater --display-name="FuelScout updater"
    ```
-   When asked for a password, use a [personal access token](https://github.com/settings/tokens) (classic, `repo` + `workflow` scopes),
-   not your GitHub password. Or skip the terminal and use GitHub Desktop.
 
-5. **Run it once.** Repo **Actions → Update fuel prices → Run workflow** (tick *Re-download every forecourt*).
-   The first run takes a few minutes. Then open `https://<you>.github.io/fuelscout-data/meta.json`;
-   it should show a `stationCount` of several thousand.
+4. **Secrets.** For each of `FUEL_FINDER_CLIENT_ID`, `FUEL_FINDER_CLIENT_SECRET` (from the
+   [Fuel Finder developer portal](https://www.developer.fuel-finder.service.gov.uk/access-latest-fuelprices))
+   and `GITHUB_TOKEN`, paste the value when prompted:
+   ```bash
+   read -s "v?Value: " && printf '%s' "$v" | gcloud secrets create FUEL_FINDER_CLIENT_ID --replication-policy=user-managed --locations=europe-west2 --data-file=- ; unset v
+   gcloud secrets add-iam-policy-binding FUEL_FINDER_CLIENT_ID --member=serviceAccount:fuelscout-updater@<project-id>.iam.gserviceaccount.com --role=roles/secretmanager.secretAccessor
+   ```
+   To change a value later, use `gcloud secrets versions add <NAME> --data-file=-` the same way.
 
-6. **Point the app at it.** In the app project, set `AppConfig.dataURL` to `https://<you>.github.io/fuelscout-data`.
+5. **Deploy and run the job.**
+   ```bash
+   gcloud run jobs deploy fuelscout-updater --source . --region europe-west2 \
+     --service-account fuelscout-updater@<project-id>.iam.gserviceaccount.com \
+     --set-secrets FUEL_FINDER_CLIENT_ID=FUEL_FINDER_CLIENT_ID:latest,FUEL_FINDER_CLIENT_SECRET=FUEL_FINDER_CLIENT_SECRET:latest,GITHUB_TOKEN=GITHUB_TOKEN:latest \
+     --set-env-vars SITE_URL=https://<you>.github.io/fuelscout-data/,GITHUB_REPO=<you>/fuelscout-data \
+     --memory 512Mi --task-timeout 20m --max-retries 0
+   gcloud run jobs execute fuelscout-updater --region europe-west2 --wait
+   ```
 
-From then on it updates itself every 15 minutes.
+6. **Turn on Pages.** Repo **Settings → Pages → Deploy from a branch → `gh-pages` / root**.
+   Then open `https://<you>.github.io/fuelscout-data/meta.json`; `stationCount` should be several thousand.
+
+7. **Schedule it.**
+   ```bash
+   gcloud run jobs add-iam-policy-binding fuelscout-updater --region europe-west2 --member=serviceAccount:fuelscout-updater@<project-id>.iam.gserviceaccount.com --role=roles/run.invoker
+   gcloud scheduler jobs create http fuelscout-every-15-min --location europe-west2 --schedule="*/15 * * * *" --http-method=POST \
+     --uri="https://run.googleapis.com/v2/projects/<project-id>/locations/europe-west2/jobs/fuelscout-updater:run" \
+     --oauth-service-account-email=fuelscout-updater@<project-id>.iam.gserviceaccount.com
+   ```
+
+8. **Point the app at it.** In the app project, set `AppConfig.dataURL` to `https://<you>.github.io/fuelscout-data`.
+
+After changing the scripts, redeploy with the command in step 5.
 
 ## Good to know
 
-- **Schedules can run late.** GitHub may start scheduled runs a few minutes late at busy times.
-- **60-day pause.** GitHub pauses schedules in public repos after 60 days with no commits. It emails you first;
-  re-enable it under **Actions**, or push any small commit.
-- **Failures are safe.** If a run fails (e.g. the API is down), the previous data stays published. See the error under **Actions**.
+- **Failures are safe.** If a run fails (e.g. the API is down), the previous data stays published.
+  See **Cloud Run → Jobs → fuelscout-updater → Logs**.
+- **Force a full re-download** with
+  `gcloud run jobs execute fuelscout-updater --region europe-west2 --update-env-vars FORCE_FULL=true`.
 - **Incremental by design.** Each run reads the last published `snapshot.json` and asks Fuel Finder only for changes.
-  A full re-download happens weekly, or when you tick the box in step 5.
+  A full re-download happens weekly.
+- **Rate limits.** Fuel Finder allows 100 requests a minute, one at a time; the script makes one request at a time.
+- **Terms.** Fuel Finder's developer guidelines say "don't redistribute raw API data". This repo publishes reshaped
+  area files plus `snapshot.json`; confirm with the Fuel Finder team that this is acceptable.
 - Prices sent in pounds (1.379) or tenths of a penny (1379) are converted to pence; values outside 50–400p are dropped.
