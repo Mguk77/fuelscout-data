@@ -198,7 +198,12 @@ async function validToken() {
     }),
   });
   const text = await response.text();
-  if (!response.ok) throw new Error(`Fuel Finder sign-in failed (${response.status}): ${text.slice(0, 200)}`);
+  if (!response.ok) {
+    // An empty 403 from CloudFront means the request was blocked before reaching the API (e.g. a cloud IP),
+    // whereas wrong credentials come back as a JSON 401.
+    const via = `server=${response.headers.get("server")}, x-cache=${response.headers.get("x-cache")}`;
+    throw new Error(`Fuel Finder sign-in failed (${response.status}, ${via}): ${text.slice(0, 200) || "<empty body>"}`);
+  }
 
   // The token may be returned bare or wrapped in { success, data: { ... } }.
   const body = JSON.parse(text);
