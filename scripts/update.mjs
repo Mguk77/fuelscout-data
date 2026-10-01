@@ -1,7 +1,7 @@
 // Downloads GOV.UK Fuel Finder data and publishes it as small area files
 // ("tiles") so the FuelScout app only downloads the forecourts near the user.
 //
-// Runs in GitHub Actions (Node 20+, no dependencies). The previous run's
+// Runs as a Cloud Run Job in London (Node 20+, no dependencies). The previous run's
 // snapshot is read back from the live GitHub Pages site, so each run only asks
 // the API for what changed. A full re-download happens weekly.
 //
@@ -24,6 +24,7 @@ const FULL_SYNC_INTERVAL = 7 * 24 * HOUR;
 const STATION_SYNC_INTERVAL = HOUR;
 const OVERLAP = 5 * 60 * 1000; // Overlap incremental windows so clock skew can't drop an update.
 const BATCH_SIZE = 500;
+const USER_AGENT = "FuelScout/1.0 (+https://github.com/Mguk77/fuelscout-data)";
 
 const { FUEL_FINDER_CLIENT_ID, FUEL_FINDER_CLIENT_SECRET, SITE_URL, FORCE_FULL } = process.env;
 if (!FUEL_FINDER_CLIENT_ID || !FUEL_FINDER_CLIENT_SECRET) {
@@ -165,7 +166,7 @@ async function apiGet(url) {
   for (let attempt = 1; ; attempt++) {
     const token = await validToken();
     apiRequests++;
-    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json" } });
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: "application/json", "User-Agent": USER_AGENT } });
     const text = await response.text();
 
     if (response.ok) return unwrapList(text);
@@ -189,7 +190,7 @@ async function validToken() {
   apiRequests++;
   const response = await fetch(new URL("/api/v1/oauth/generate_access_token", API_BASE), {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": USER_AGENT },
     body: new URLSearchParams({
       grant_type: "client_credentials",
       client_id: FUEL_FINDER_CLIENT_ID,
