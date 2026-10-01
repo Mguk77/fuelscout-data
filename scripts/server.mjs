@@ -18,9 +18,9 @@ if (!BUCKET) throw new Error("Set BUCKET to the private Cloud Storage bucket nam
 const SNAPSHOT = "snapshot.json";
 const FORMAT_VERSION = 1;
 const MAX_RADIUS_MILES = 30; // The app never asks for more than this.
-const RECHECK_INTERVAL = 2 * 60 * 1000; // How often to look for a newer snapshot.
+const RECHECK_INTERVAL = 5 * 60 * 1000; // How often to look for a newer snapshot (published hourly).
 // Per client IP, per instance. Generous because mobile networks put many phones behind one IP;
-// the app itself only asks when the user moves a few miles, data is 5 minutes old, or they pull to refresh.
+// the app itself only asks when the user moves a few miles, data is 15 minutes old, or they pull to refresh.
 const RATE_LIMIT = 60;
 const RATE_WINDOW = 10 * 60 * 1000;
 const UK = { minLat: 49, maxLat: 61.5, minLon: -8.9, maxLon: 2.1 };

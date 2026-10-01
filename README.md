@@ -6,7 +6,7 @@ API in a private Cloud Storage bucket, and answers the app's "stations near me" 
 Nothing is published as public files. Runs on Google Cloud in London and is expected to stay within the free allowance.
 
 ```
-Fuel Finder API ──(every 15 min)──▶ job fuelscout-updater ──▶ private bucket: snapshot.json
+Fuel Finder API ──(hourly)──────▶ job fuelscout-updater ──▶ private bucket: snapshot.json
                                                                   │
 app ──GET /v1/stations?lat=…&lon=…&radiusMiles=…──▶ service fuelscout-api (reads the snapshot)
 ```
@@ -20,7 +20,7 @@ AWS Stockholm, servers in the Netherlands, Germany or the US) gets an empty `403
 |---|---|---|
 | Cloud Run job `fuelscout-updater` (`scripts/update.mjs`) | `fuelscout-updater@<project>.iam.gserviceaccount.com` | The two Fuel Finder secrets; read/write the bucket |
 | Cloud Run service `fuelscout-api` (`scripts/server.mjs`) | `fuelscout-api@<project>.iam.gserviceaccount.com` | Read the bucket |
-| Cloud Scheduler `fuelscout-every-15-min` | starts the job as `fuelscout-updater` | |
+| Cloud Scheduler `fuelscout-hourly` | starts the job as `fuelscout-updater` | |
 | Bucket `gs://<project>-data` | private, public access prevented | |
 
 ### The API
@@ -85,7 +85,7 @@ Replace `<project>` with your Google Cloud project ID.
 6. **Schedule the job.**
    ```bash
    gcloud run jobs add-iam-policy-binding fuelscout-updater --region europe-west2 --member=serviceAccount:fuelscout-updater@<project>.iam.gserviceaccount.com --role=roles/run.invoker
-   gcloud scheduler jobs create http fuelscout-every-15-min --location europe-west2 --schedule="*/15 * * * *" --http-method=POST \
+   gcloud scheduler jobs create http fuelscout-hourly --location europe-west2 --schedule="0 * * * *" --http-method=POST \
      --uri="https://run.googleapis.com/v2/projects/<project>/locations/europe-west2/jobs/fuelscout-updater:run" \
      --oauth-service-account-email=fuelscout-updater@<project>.iam.gserviceaccount.com
    ```
