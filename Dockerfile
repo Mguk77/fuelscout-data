@@ -1,7 +1,7 @@
-# Cloud Run Job that refreshes the fuel price files and publishes them to GitHub Pages.
-# Runs in London (europe-west2): the Fuel Finder API only answers UK addresses.
+# One image, two entry points (both run in London, europe-west2; the Fuel Finder API only answers UK addresses):
+#   Cloud Run job      fuelscout-updater: node scripts/update.mjs  (default)
+#   Cloud Run service  fuelscout-api:     node scripts/server.mjs
 FROM node:22-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY scripts ./scripts
-CMD ["sh", "scripts/publish.sh"]
+CMD ["node", "scripts/update.mjs"]

@@ -1,23 +1,20 @@
-// Downloads GOV.UK Fuel Finder data and publishes it as small area files
-// ("tiles") so the FuelScout app only downloads the forecourts near the user.
+// Downloads GOV.UK Fuel Finder data into a private Cloud Storage bucket, where
+// server.mjs reads it to answer the FuelScout app's "stations near me" requests.
+// Nothing is published publicly.
 //
-// Runs as a Cloud Run Job in London (Node 20+, no dependencies). The previous run's
-// snapshot is read back from the live GitHub Pages site, so each run only asks
-// the API for what changed. A full re-download happens weekly.
+// Runs as a Cloud Run Job in London (Node 20+, no dependencies); the Fuel Finder
+// API only answers UK addresses. Each run reads the previous snapshot back from
+// the bucket, so it only asks the API for what changed. A full re-download
+// happens weekly.
 //
-// Output (./public):
-//   meta.json                 – format version, last update time, tile size
-//   tiles/<row>_<col>.json    – open forecourts in that tile, with every price
-//   snapshot.json             – everything, used as the next run's starting point
+// Output (gs://$BUCKET):
+//   snapshot.json – every forecourt with its prices, plus sync timestamps
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { readObject, writeObject } from "./storage.mjs";
 
 const API_BASE = "https://www.fuel-finder.service.gov.uk";
-const OUT_DIR = "public";
+const SNAPSHOT = "snapshot.json";
 const FORMAT_VERSION = 1;
-// ~22 km × ~20 km at UK latitudes. The app reads these values from meta.json.
-const TILE_LAT = 0.2;
-const TILE_LON = 0.3;
 
 const HOUR = 60 * 60 * 1000;
 const FULL_SYNC_INTERVAL = 7 * 24 * HOUR;
@@ -26,10 +23,11 @@ const OVERLAP = 5 * 60 * 1000; // Overlap incremental windows so clock skew can'
 const BATCH_SIZE = 500;
 const USER_AGENT = "FuelScout/1.0 (+https://github.com/Mguk77/fuelscout-data)";
 
-const { FUEL_FINDER_CLIENT_ID, FUEL_FINDER_CLIENT_SECRET, SITE_URL, FORCE_FULL } = process.env;
+const { FUEL_FINDER_CLIENT_ID, FUEL_FINDER_CLIENT_SECRET, BUCKET, FORCE_FULL } = process.env;
 if (!FUEL_FINDER_CLIENT_ID || !FUEL_FINDER_CLIENT_SECRET) {
-  throw new Error("Set the FUEL_FINDER_CLIENT_ID and FUEL_FINDER_CLIENT_SECRET repository secrets.");
+  throw new Error("Set the FUEL_FINDER_CLIENT_ID and FUEL_FINDER_CLIENT_SECRET secrets.");
 }
+if (!BUCKET) throw new Error("Set BUCKET to the private Cloud Storage bucket name.");
 
 // MARK: - Main
 
@@ -78,67 +76,27 @@ for (const record of await fetchAllBatches("/api/v1/pfs/fuel-prices", pricesSinc
 }
 snapshot.pricesAt = iso(now);
 
-const tileCount = await writeOutput(snapshot);
+await writeObject(BUCKET, SNAPSHOT, JSON.stringify(snapshot));
 console.log(
   JSON.stringify({
     full,
     stations: Object.keys(snapshot.stations).length,
     stationsChanged,
     pricesChanged,
-    tiles: tileCount,
     apiRequests,
   }),
 );
 
-// MARK: - Output
-
-async function writeOutput(snapshot) {
-  await rm(OUT_DIR, { recursive: true, force: true });
-  await mkdir(`${OUT_DIR}/tiles`, { recursive: true });
-
-  const tiles = new Map();
-  for (const station of Object.values(snapshot.stations)) {
-    if (station.isClosed || Object.keys(station.prices).length === 0) continue;
-    const key = `${Math.floor(station.latitude / TILE_LAT)}_${Math.floor(station.longitude / TILE_LON)}`;
-    if (!tiles.has(key)) tiles.set(key, []);
-    tiles.get(key).push(station);
-  }
-
-  for (const [key, stations] of tiles) {
-    await writeFile(`${OUT_DIR}/tiles/${key}.json`, JSON.stringify({ updatedAt: snapshot.pricesAt, stations }));
-  }
-
-  const meta = {
-    version: FORMAT_VERSION,
-    updatedAt: snapshot.pricesAt,
-    lastFullSyncAt: snapshot.fullAt,
-    tileLat: TILE_LAT,
-    tileLon: TILE_LON,
-    stationCount: Object.keys(snapshot.stations).length,
-    tileCount: tiles.size,
-  };
-  await writeFile(`${OUT_DIR}/meta.json`, JSON.stringify(meta, null, 2));
-  await writeFile(`${OUT_DIR}/snapshot.json`, JSON.stringify(snapshot));
-  await writeFile(`${OUT_DIR}/.nojekyll`, "");
-  await writeFile(
-    `${OUT_DIR}/index.html`,
-    `<!doctype html><meta charset="utf-8"><title>FuelScout data</title>
-<p>UK fuel prices for the FuelScout app, updated ${meta.updatedAt} (${meta.stationCount} forecourts).</p>
-<p>Source: <a href="https://www.gov.uk/guidance/access-the-latest-fuel-prices-and-forecourt-data-via-api-or-email">GOV.UK Fuel Finder</a>.
-Contains public sector information licensed under the Open Government Licence v3.0.</p>`,
-  );
-  return tiles.size;
-}
+// MARK: - Snapshot
 
 async function loadPreviousSnapshot() {
-  if (!SITE_URL) return null;
+  const object = await readObject(BUCKET, SNAPSHOT);
+  if (!object) return null; // First run.
   try {
-    const response = await fetch(new URL("snapshot.json", SITE_URL.endsWith("/") ? SITE_URL : `${SITE_URL}/`));
-    if (!response.ok) return null;
-    const snapshot = await response.json();
+    const snapshot = JSON.parse(object.text);
     return snapshot?.version === FORMAT_VERSION && snapshot.stations ? snapshot : null;
   } catch {
-    return null; // First run, or the site isn't published yet.
+    return null; // Unreadable; start again with a full download.
   }
 }
 
